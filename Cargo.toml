@@ -1,0 +1,12 @@
+[package]
+name = "formal_"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+num = "0.4.3"
+strum = "0.27"
+strum_macros = "0.27"
+thiserror = "2.0.12"
+derive_more = "0.99"
+delegate = "0.13.3"
