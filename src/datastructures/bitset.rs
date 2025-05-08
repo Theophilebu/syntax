@@ -1,5 +1,6 @@
 use num::{Unsigned, PrimInt};
 use std::fmt::Binary;
+use itertools::Itertools;
 
 #[derive(Debug, Clone)]
 pub struct BitSet<UINT: Unsigned + PrimInt + Binary> 
@@ -316,6 +317,19 @@ where
             s.push_str(&total);
         }
         println!("{s}");
+    }
+
+    pub fn print_set<'gram>(&self, f: impl Fn(usize) -> &'gram str) {
+        let mut out: String = String::new();
+        out.push('{');
+
+        for s in Itertools::intersperse(self.iter().map(f), ", ") {
+            out.push_str(s);
+        }
+
+        out.push('}');
+        println!("{out}");
+    
     }
 
 
