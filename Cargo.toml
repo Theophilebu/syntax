@@ -11,3 +11,4 @@ thiserror = "2.0.12"
 derive_more = "0.99"
 delegate = "0.13.3"
 itertools = "0.12"
+bumpalo = { version = "3.18", features = ["collections"] }

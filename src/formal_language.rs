@@ -1,40 +1,18 @@
 use std::cell::OnceCell;
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::result;
-use crate::datastructures::flat_table::{FlatTable, Indexing};
+use crate::datastructures::flat_table::FlatTable;
+use bumpalo::{Bump, collections::Vec as BumpVec};
 
 use thiserror::Error;
-use derive_more::{Add, Sub, Mul, Div, AddAssign, SubAssign, MulAssign, DivAssign};
 use delegate::delegate;
 
-use crate::datastructures::bitset::BitSet;
+use crate::datastructures::indexing::{Indexing, Handle};
 use crate::UINT;
-use crate::Idx;
 
+// avoid useless generic parameter
+type BitSet = crate::datastructures::bitset::BitSet<UINT>;
 
-// --------------------------------------------
-
-// External represents common data for a set of values, so that it is useless to store it inside the value
-pub trait Enumerable<Id, External> {
-    fn id(&self, external: External) -> Id;
-    fn from_id(id: Idx, external: External) -> Self;
-}
-
-impl <External, T: Enumerable<Idx, External>> Enumerable<Idx, External> for Option<T> {
-    fn id(&self, external: External) -> Idx {
-        match self {
-            None => Idx(0),
-            Some(t) => t.id(external) + Idx(1),
-        }
-    }
-    fn from_id(id: Idx, external: External) -> Self {
-        match id {
-            Idx(0) => Self::None,
-            Idx(_) => Self::Some(T::from_id(id - Idx(1), external)),
-        }
-    }
-}
 
 // --------------------------------------------
 
@@ -61,26 +39,32 @@ impl Alphabet {
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub struct NonTerm {
-    pub id: Idx,
+    pub id: u16,
 }
-impl Enumerable<Idx, ()> for NonTerm {
-    fn id(&self, _: ()) -> Idx {
+impl Handle for NonTerm {
+    type Id = u16;
+    type Context<'c> = ();
+
+    fn id(&self, _: ()) -> u16 {
         self.id
     }
-    fn from_id(id: Idx, _: ()) -> Self {
+    fn from_id(id: u16, _: ()) -> Self {
         return NonTerm {id};
     }
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub struct Term {
-    pub id: Idx,
+    pub id: u16,
 }
-impl Enumerable<Idx, ()> for Term {
-    fn id(&self, _: ()) -> Idx {
+impl Handle for Term {
+    type Id = u16;
+    type Context<'c> = ();
+
+    fn id(&self, _: ()) -> u16 {
         self.id
     }
-    fn from_id(id: Idx, _: ()) -> Self {
+    fn from_id(id: u16, _: ()) -> Self {
         return Term {id};
     }
 }
@@ -90,14 +74,18 @@ pub enum Symbol {
     Term(Term),
     NonTerm(NonTerm),
 }
-impl Enumerable<Idx, Idx> for Symbol {
-    fn id(&self, nbr_non_terms: Idx) -> Idx {
+// here the context is the number of non-terminals
+impl Handle for Symbol {
+    type Id = u16;
+    type Context<'c> = u16;
+
+    fn id(&self, nbr_non_terms: u16) -> u16 {
         match self {
             Symbol::NonTerm(non_term) => non_term.id(()),
             Symbol::Term( term ) => term.id(()) + nbr_non_terms,
         }
     }
-    fn from_id(id: Idx, nbr_non_terms: Idx) -> Self {
+    fn from_id(id: u16, nbr_non_terms: u16) -> Self {
         if id < nbr_non_terms {
             Symbol::NonTerm(NonTerm { id })
         }
@@ -110,32 +98,498 @@ impl Enumerable<Idx, Idx> for Symbol {
 
 // --------------------------------------------
 
-#[derive(Debug)]
-pub struct Token {
-    pub token_type: Symbol,
-    pub lexeme: String,
-    pub line: usize,
-    pub column: usize,
+
+/// position in the source text file where a \n is not considered a special character
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Position1D {
+    pub pos: u32,
 }
 
-impl Token {
-    pub fn next_position(&self) -> (usize, usize) {
-        // returns the line and column of the token that will come after
-        let mut line = self.line;
-        let mut column: usize = self.column;
-        for c in self.lexeme.chars() {
-            if c=='\n' {
-                line += 1;
-                column = 0;
+
+
+/// position in the source text file
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Position2D {
+    pub line: u32,
+    pub column: u32,
+}
+
+
+/// represents a type of token that always has the same representation in the source file
+/// each keyword is a FixedTokenType
+/// each operator and each delimiter is also a FixedTokenType 
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub struct FixedTokenType {
+    pub id: u16,
+}
+impl Handle for FixedTokenType {
+    type Id = u16;
+    type Context<'c> = ();
+
+    fn id(&self, _: ()) -> u16 {
+        self.id
+    }
+    fn from_id(id: u16, _: ()) -> Self {
+        return FixedTokenType {id};
+    }
+}
+
+/// represents a type of token that doesn't always have the same representation in the source file
+/// each identifier type, string literal, number literal is a VariableTokenType 
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub struct VariableTokenType {
+    pub id: u16,
+}
+impl Handle for VariableTokenType {
+    type Id = u16;
+    type Context<'c> = ();
+
+    fn id(&self, _: ()) -> u16 {
+        self.id
+    }
+    fn from_id(id: u16, _: ()) -> Self {
+        return VariableTokenType {id};
+    }
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum TokenType {
+    Fixed(FixedTokenType),
+    Variable(VariableTokenType),
+}
+// here the context is the number of fixed token types
+impl Handle for TokenType {
+    type Id = u16;
+    type Context<'c> = u16;
+
+    fn id(&self, nbr_fixed_token_types: u16) -> u16 {
+        match self {
+            TokenType::Fixed(fixed_token_type) => fixed_token_type.id(()),
+            TokenType::Variable(variable_token_type ) => variable_token_type.id(()) + nbr_fixed_token_types,
+        }
+    }
+    fn from_id(id: u16, nbr_fixed_token_types: u16) -> Self {
+        if id < nbr_fixed_token_types {
+            TokenType::Fixed(FixedTokenType { id })
+        }
+        else {
+            TokenType::Variable(VariableTokenType { id: id - nbr_fixed_token_types })
+        }
+    }
+}
+
+impl TokenType {
+    fn is_fixed(&self) -> bool {
+        match self {
+            TokenType::Fixed(_) => true,
+            TokenType::Variable(_) => false,
+        }
+    }
+
+    fn is_variable(&self) -> bool {
+        match self {
+            TokenType::Fixed(_) => false,
+            TokenType::Variable(_) => true,
+        }
+    }
+}
+
+
+
+/*
+option1
+token_types: Vec<<TokenType as Handle>::Id>, index by tokens
+lexemes: String // large string containing all variable lexemes one after another
+lexeme_offsets: Vec<u32>, same length as token_types = the number of tokens
+
+-> a bit of wasted memory in lexeme offsets (it can be indexed by a fixed token but it's useless)
+    -> should be fine
+-> no easy distinction between fixed and variable tokens: no iteration of a single token type
+-> to iterate over all variable tokens
+    -> we must iterate over every token
+    -> or create a specific vec with copied data
+
+option2
+
+// id of tokens would not correspond to their place in the file
+// id cannot be computed before the lexing ended (context is nbr of fixed tokens)
+enum Token {
+    FixedToken(FixedToken),
+    VariableToken(VariableToken),
+}
+
+fixed_token_types: Vec<<FixedTokenType as Handle>::Id>, index by fixed tokens
+variable_token_types: Vec<<VariableTokenType as Handle>::Id>, index by variable tokens
+
+
+
+fn token_type(token: Token) -> <TokenType as Handle>::Id {
+    match token {
+        FixedToken(fixed_token) => fixed_token_types[token.id()],
+        VariableToken(variable_token) => variable_token_types[token.id() - nbr_fixed_tokens],
+    
+    }
+}
+
+lexemes: String // large string containing all variable lexemes one after another
+lexeme_offsets: Vec<u32>, same length as variable_token_types = the number of variable tokens
+
+-> can't iterate simply over all tokens in order(actually yes )
+-> tokens next to each other might not have an id next to each other
+    -> we must create a vec with copied data of each token id, but with the actual order
+    -> or create an array which contains the token id of the nth token (worse because one more dereference)
+
+*/
+
+
+// chosen option: a mess between the two (might change) 
+
+
+// FixedToken, VariableToken, MixedToken are not strictly necessary types
+// , but they help to write code
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub struct FixedToken {
+    token_id: <Token as Handle>::Id,
+}
+impl FixedToken {
+    pub fn token_id(&self) -> <Token as Handle>::Id {
+        self.token_id
+    }
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]pub struct VariableToken {
+    token_id: <Token as Handle>::Id,
+}
+impl VariableToken {
+    pub fn token_id(&self) -> <Token as Handle>::Id {
+        self.token_id
+    }
+}
+
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum MixedToken {
+    Fixed(FixedToken),
+    Variable(VariableToken),
+}
+impl MixedToken {
+    pub fn token_id(&self) -> <Token as Handle>::Id {
+        match self {
+            MixedToken::Fixed(fixed_token) => fixed_token.token_id(),
+            MixedToken::Variable(variable_token) => variable_token.token_id(),
+            
+        }
+    }
+}
+
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub struct Token {
+    pub id: u32,
+}
+// needs a reference to TokenList to work properly
+impl Handle for Token {
+    // id corresponds to the order the token comes in
+    type Id = u32;
+    type Context<'c> = ();
+
+    fn id(&self, _: ()) -> u32 {
+        self.id
+    }
+
+    fn from_id(id: u32, _: ()) -> Self {
+        Self { id }
+    }
+}
+
+
+pub struct TokenList {
+
+    nbr_fixed_tokens: <Token as Handle>::Id,
+    nbr_variable_tokens: <Token as Handle>::Id,
+
+    // indexed by tokens
+    token_types: Vec<<TokenType as Handle>::Id>,
+
+    /*
+    // indexed by fixed_tokens
+    fixed_token_types: Vec<<FixedTokenType as Handle>::Id>,
+
+    // indexed by variable_tokens
+    variable_token_types: Vec<<VariableTokenType as Handle>::Id>,
+    */
+
+    /*
+    only if needed
+
+    // indexed by tokens
+    token_to_mixed: Vec<<Token as Handle>::Id>,
+    // indexed by mixed tokens
+    mixed_to_token: Vec<<MixedToken as Handle>::Id>,
+    */
+
+    // lexemes for the variable tokens
+    // each variable lexeme is a substring of lexemes
+    variable_lexemes: String,
+    // indexed by Token, but should only be used with variable tokens
+    // maps a token to the start of its lexeme
+    // if token is fixed, lexeme_offsets[token.id()] == lexeme_offsets[token.id()+1]
+    lexeme_offsets: Vec<u32>,
+
+    // holds the position of each newline '\n' character
+    new_lines: Vec<Position1D>,
+
+    // indexed by tokens
+    token_positions: Vec<Position1D>,
+
+
+    /*
+
+    Token
+    |
+    |       v
+    | token_positions
+    |       v
+    |
+    Position1D
+    |
+    |       ^                   v
+    | to_position1d       to_position2d
+    |       ^                   v
+    |
+    Position2D
+    
+    */
+}
+
+impl TokenList {
+
+    fn token_type(&self, token: Token) -> TokenType {
+        todo!();
+        let nbr_fixed_token_types = 0;
+        TokenType::from_id(self.token_types[token.usize_id(())], nbr_fixed_token_types)
+    }
+
+    fn as_mixed(&self, token: Token) -> MixedToken {
+        match self.token_type(token) {
+            TokenType::Fixed(_) => {
+                MixedToken::Fixed(FixedToken { token_id: token.id(()) })
             }
-            else {
-                column += 1;
+            TokenType::Variable(_) => {
+                MixedToken::Variable(VariableToken { token_id: token.id(()) })
+            }
+        }
+    }
+
+    // ---
+
+    fn nbr_fixed_tokens(&self) -> <Token as Handle>::Id {
+        self.nbr_fixed_tokens
+    }
+
+    fn nbr_variable_tokens(&self) -> <Token as Handle>::Id {
+        self.nbr_variable_tokens
+    }
+
+    fn nbr_tokens(&self) -> <Token as Handle>::Id {
+        self.nbr_fixed_tokens() + self.nbr_variable_tokens()
+    }
+
+    fn nth_token(&self, n: <Token as Handle>::Id) -> Token {
+        Token { id: n }
+    }
+
+    // ---
+
+    // depends on how the fixed tokens are represented by the lexer
+    fn fixed_token_size(&self, fixed_token: FixedToken) -> u8 {
+        todo!()
+    }
+
+    fn variable_token_size(&self, variable_token: VariableToken) -> u8 {
+        let actual_token: Token = Token::from_id(variable_token.token_id(), ());
+        let start: usize = usize::try_from(self.lexeme_offsets[actual_token.usize_id(())]).unwrap();
+        let end: usize = self
+            .lexeme_offsets
+            .get(actual_token.usize_id(())+1)
+            .map_or(self.variable_lexemes.len(), |x| x.into_usize());
+        return <u8 as Indexing>::from_usize(end-start);
+    }
+
+    fn token_size(&self, token: Token) -> u8 {
+        match self.as_mixed(token) {
+            MixedToken::Fixed(fixed_token) => self.fixed_token_size(fixed_token),
+            MixedToken::Variable(variable_token) => self.variable_token_size(variable_token),
+        }
+    }
+
+    // ---
+
+    fn to_position1d(&self, position2d: Position2D) -> Position1D {
+        Position1D { pos: self.new_lines[position2d.line.into_usize()].pos + position2d.column + 1}
+    }
+
+    fn to_position2d(&self, position1d: Position1D) -> Position2D {
+        let new_line_index: Result<usize, usize> = self.new_lines.binary_search(&position1d);
+        match new_line_index {
+            Ok(valid_index) => {
+                Position2D {
+                    line: u32::from_usize(valid_index),
+                    column: position1d.pos - {if valid_index == 0 {0} else {self.new_lines[valid_index-1].pos + 1}}
+                }
+            }
+            Err(invalid_index) => {
+                Position2D {
+                    line: u32::from_usize(invalid_index),
+                    column: position1d.pos - {if invalid_index == 0 {0} else {self.new_lines[invalid_index-1].pos + 1}}
+                }
+            }
+        }
+    }
+
+    fn position1d(&self, token: Token) -> Position1D {
+        self.token_positions[token.usize_id(())]
+    }
+
+
+
+    // usefull for real time analysis, maybe
+    fn token_at2d(&self, position2d: Position2D) -> Option<Token> {
+        self.token_at1d(self.to_position1d(position2d))
+    }
+
+    fn token_at1d(&self, position1d: Position1D) -> Option<Token> {
+        let token_index: Result<usize, usize> = self.token_positions.binary_search(&position1d);
+
+        match token_index {
+            Ok(valid_index) => {
+                // get the leftmost token that corresponds (empty tokens might be possible)
+                let mut smaller_valid_index = valid_index;
+                while (smaller_valid_index>=1) && (self.token_positions[smaller_valid_index - 1] == position1d) {
+                    smaller_valid_index -= 1;
+                }
+                Some(self.nth_token(u32::from_usize(smaller_valid_index)))
+            }
+            Err(invalid_index) => {
+                if invalid_index == 0 {
+                    return None;
+                }
+                let previous_token_position: Position1D = self.token_positions[invalid_index - 1];
+                let previous_token: Token = self.nth_token(<Token as Handle>::Id::from_usize(invalid_index - 1));
+                
+                if previous_token_position.pos + u32::from(self.token_size(previous_token)) >= position1d.pos {
+                    Some(previous_token)
+                }
+                else {
+                    None
+                }
+            }
+        }
+    }
+
+    // ---
+
+    fn all_fixed_tokens(&self) -> impl Iterator<Item = FixedToken> {
+        self.all_tokens()
+            .filter(|(_token, token_type)| token_type.is_fixed())
+            .map(|(token, _token_type)| FixedToken { token_id: token.id(()) })
+    }
+
+    fn all_variable_tokens(&self) -> impl Iterator<Item = VariableToken> {
+        self.all_tokens()
+            .filter(|(_token, token_type)| token_type.is_variable())
+            .map(|(token, _token_type)| VariableToken { token_id: token.id(()) })
+    }
+
+    fn all_tokens(&self) -> impl Iterator<Item = (Token, TokenType)> {
+        
+        (0..self.nbr_tokens())
+            .map(|token_id| Token {id: token_id})
+            .map(|token| (token, self.token_type(token)))
+
+    }
+
+    fn all_tokens_with_positions(&self) -> impl Iterator<Item = (Token, TokenType, Position1D, Position2D)> {
+        (0..self.nbr_tokens())
+            .map(|token_id| Token {id: token_id})
+            .map(|token| (token, self.token_type(token)))
+            .map(|(token, token_type)| {
+                let position1d: Position1D = self.position1d(token);
+                let position2d: Position2D = self.to_position2d(position1d);
+                (token, token_type, position1d, position2d)
+            })
+    }
+
+    fn all_tokens_with_lookahead<'se, const L: usize>(&'se self) -> impl Iterator<Item = [Option<(Token, TokenType)>; L]> {
+
+        struct LookaheadIterator<'se, const L: usize> {
+            i: usize,
+            current: [Option<(Token, TokenType)>; L],
+            token_list: &'se TokenList,
+        }
+
+        impl <'se, const L: usize> Iterator for LookaheadIterator<'se, L> {
+            type Item = [Option<(Token, TokenType)>; L];
+
+            fn next(&mut self) -> Option<Self::Item> {
+                for k in 0..(L-1) {
+                    self.current[k] = self.current[k+1];
+                }
+
+                if self.current[0] == None {
+                    return None;
+                }
+
+                self.i+=1;
+
+                self.current[L - 1] = 
+                if (<Token as Handle>::Id::from_usize(self.i + L - 1) == self.token_list.nbr_tokens()) {
+                    None
+                }
+                else {
+                    let token_id: <Token as Handle>::Id = <Token as Handle>::Id::from_usize(self.i + L - 1);
+                    let token: Token = Token { id: token_id };
+                    Some((token, self.token_list.token_type(token)))
+                };
+
+                return Some(self.current);
             }
         }
 
-        (line, column)
+
+        let initial_current: [Option<(Token, TokenType)>; L] = std::array::from_fn(|i: usize| {
+            if <Token as Handle>::Id::from_usize(i) == self.nbr_tokens() {
+                None
+            }
+            else {
+                let token_id: <Token as Handle>::Id = <Token as Handle>::Id::from_usize(i);
+                let token: Token = Token { id: token_id };
+                Some((token, self.token_type(token)))
+            }
+        });
+        LookaheadIterator {
+            i: 0,
+            current: initial_current,
+            token_list: &self,
+        }
     }
+
+    // ---
+
+    fn variable_token_lexeme(&self, variable_token: VariableToken) -> &str {
+        let actual_token: Token = Token::from_id(variable_token.token_id(), ());
+        let start: usize = usize::try_from(self.lexeme_offsets[actual_token.usize_id(())]).unwrap();
+        let end: usize = self
+            .lexeme_offsets
+            .get(actual_token.usize_id(())+1)
+            .map_or(self.variable_lexemes.len(), |x| x.into_usize());
+            
+        &self.variable_lexemes[start..end]
+    }
+
 }
+
 
 
 // --------------------------------------------
@@ -210,6 +664,11 @@ impl CfgSymbolSet {
         Idx::from(self.non_terms.len() + self.special_non_terms.len())
     }
 
+    // shorthand: used often for conversions
+    pub fn e(&self) -> Idx {
+        self.nbr_non_terminals()
+    }
+
     pub fn nbr_terminals(&self) -> Idx {
         Idx::from(self.terms.len() + self.special_terms.len())
     }
@@ -264,19 +723,19 @@ impl CfgSymbolSet {
 
     pub fn repr_non_term(&self, non_term: NonTerm) -> &str {
         if self.is_special(Symbol::NonTerm(non_term)) {
-            return &self.special_non_terms[usize::from(non_term.id(()))];
+            return &self.special_non_terms[non_term.usize_id(())];
         }
         else {
-            return &self.non_terms[usize::from(non_term.id(())) - self.special_non_terms.len()];
+            return &self.non_terms[non_term.usize_id(()) - self.special_non_terms.len()];
         }
     }
 
     pub fn repr_term(&self, term: Term) -> &str {
         if self.is_special(Symbol::Term(term)) {
-            return &self.special_terms[usize::from(term.id(()))];
+            return &self.special_terms[term.usize_id(())];
         }
         else {
-            return &self.terms[usize::from(term.id(())) - self.special_terms.len()];
+            return &self.terms[term.usize_id(()) - self.special_terms.len()];
         }
     }
 
@@ -365,6 +824,7 @@ impl CfgSymbolSet {
 #[derive(Debug, Clone)]
 pub struct CfgRule {
     pub origin: NonTerm,
+    // not using handles for symbols is fine here, it's far from being a bottleneck
     pub replacement: Vec<Symbol>,
 }
 
@@ -379,7 +839,7 @@ impl CfgRule {
     }
 }
 
-pub struct CfgRuleId(Idx);
+pub struct CfgRuleId(u16);
 
 // --------------------------------------------
 
@@ -396,8 +856,11 @@ pub struct Cfg {
     // indexed by symbols
     are_symbols_nullable: OnceCell<BitSet<UINT>>,
 
-    // indexed by non-terminal symbols, bitset by terminal-symbols
+    // indexed by non-terminal symbols, bitset by terminal symbols
     first_sets: OnceCell<Vec<BitSet<UINT>>>,
+
+    // indexed by symbols, bitset by terminal symbols
+    follow_sets: OnceCell<Vec<BitSet<UINT>>>,
 
     /*
     get_NTsymbols_implied_by_rule
@@ -442,6 +905,8 @@ impl  Cfg {
 
             first_sets: OnceCell::new(),
 
+            follow_sets: OnceCell::new(),
+
         })
     }
 
@@ -456,6 +921,7 @@ impl  Cfg {
             pub fn symbol_id(&self, symbol: Symbol) -> Idx;
             pub fn symbol_from_id(&self, id: Idx) -> Symbol;
             pub fn nbr_non_terminals(&self) -> Idx;
+            pub fn e(&self) -> Idx;
             pub fn nbr_terminals(&self) -> Idx;
             pub fn nbr_symbols(&self) -> Idx;
             pub fn all_non_terminals(&self) -> impl Iterator<Item = NonTerm>;
@@ -526,11 +992,11 @@ impl  Cfg {
 
     pub fn get_rule_by_id(&self, rule_id: CfgRuleId) -> &CfgRule {
         // no check: we assume that every CfgRuleId constructed is valid
-        self.rules.get_by_id(rule_id.0)
+        self.rules.get_by_flat_id(rule_id.0)
     }
 
     pub fn get_rules_by_origin(&self, origin: NonTerm) -> impl Iterator<Item = (CfgRuleId, &CfgRule)> {
-        let rule_id: Idx = self.rules.rows[usize::from(origin.id(()))];
+        let rule_id: Idx = self.rules.rows[origin.usize_id(())];
         (&self.rules[origin.id(())])
             .iter()
             .enumerate()
@@ -542,8 +1008,7 @@ impl  Cfg {
         
         let rules_producing_each_symbol: &Vec<BitSet<UINT>> = 
             self.rules_producing_each_symbol.get_or_init(|| self.compute_rules_producing_each_symbol());
-
-        (&rules_producing_each_symbol[usize::from(produced_symbol.id(self.nbr_non_terminals()))])
+        (&rules_producing_each_symbol[produced_symbol.usize_id(self.e())])
             .iter()
             .map(|rule_id| (CfgRuleId(Idx::from(rule_id)),
                 self.get_rule_by_id(CfgRuleId(Idx::from(rule_id)))))
@@ -558,7 +1023,7 @@ impl  Cfg {
         
         for (rule_id, rule) in self.all_rules() {
             for &replacement_symbol in &rule.replacement {
-                rules_producing_each_symbol[usize::from(replacement_symbol.id(self.nbr_non_terminals()))]
+                rules_producing_each_symbol[replacement_symbol.usize_id(self.e())]
                 .insert(usize::from(rule_id.0));
             }
         }
@@ -572,7 +1037,7 @@ impl  Cfg {
             Symbol::NonTerm(non_term) => {
                 self.are_symbols_nullable
                     .get_or_init(|| self.compute_are_symbols_nullable())
-                    .contains(usize::from(non_term.id(())))
+                    .contains(non_term.usize_id(()))
             }
             Symbol::Term(term) => {
                 false
@@ -643,12 +1108,19 @@ impl  Cfg {
 
     // -------------------------- first sets
 
+    /// returns the first sets of all the non-terminal symbols. The first set of a non-terminal symbol is 
+    /// the set of terminal symbols that can be the first produced by the non-terminal symbol.
+    /// for example:
+    /// A -> a|aB, B -> b|C, C -> A|c,  first(A) = {a}, first(B) = {a, b, c}, first(C) = {a, c}
+    /// If the symbol loops to itself without any terminal symbol before, it doesn't affect the first set.
+    ///    for example: A -> Aa|b,  first(A) = {b}
+    /// The first set of a symbol includes None iff it is nullable """
     pub fn get_first_set(&self, symbol: Symbol) -> Cow<BitSet<UINT>> {
         match symbol {
             Symbol::NonTerm(non_term) => {
                 Cow::Borrowed(
                     &self.first_sets
-                        .get_or_init(|| self.compute_first_sets())[usize::from(non_term.id(()))]
+                        .get_or_init(|| self.compute_first_sets())[non_term.usize_id(())]
                     )
             }
             Symbol::Term(term) => {
@@ -663,7 +1135,6 @@ impl  Cfg {
 
     fn compute_first_sets(&self) -> Vec<BitSet<UINT>> {
 
-        // first_sets: dict[Symbol, set[Symbol | NOSYMBOL]] = {symbol: set() for symbol in self.NTsymbols}
 
 
         // for each non-terminal symbol, contains a bitset of optional terminal symbols
@@ -679,7 +1150,7 @@ impl  Cfg {
         // for each terminal symbol, maps to the set of non-terminal symbols that relies on it (inculde it)
         let mut terminal_inclusions: Vec<BitSet<UINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_non_terminals())); usize::from(self.nbr_terminals())];
-        // terminal_inclusions[a] = [b, c, d] <=> a included in first(b), first(c), and first(d)
+        // terminal_inclusions[a] = {b, c, d} <=> a included in first(b), first(c), and first(d)
 
         // initialize results that include firsts
         for (rule_id, rule) in self.all_rules() {
@@ -687,7 +1158,7 @@ impl  Cfg {
                 match symbol {
                     Symbol::NonTerm(non_term) => {
                         // the first set of the non_term is included in the first set of the origin of the rule
-                        non_terminal_inclusions[usize::from(non_term.id(()))].insert(usize::from(rule.origin.id(())));
+                        non_terminal_inclusions[non_term.usize_id(())].insert(rule.origin.usize_id(()));
 
                         // we stay in the loop only if this non_term is nullable
                         if !self.is_symbol_nullable(symbol) {
@@ -696,7 +1167,7 @@ impl  Cfg {
                     }
                     Symbol::Term(term) => {
                         // the term is included in the first set of the origin of the rule
-                        terminal_inclusions[usize::from(term.id(()))].insert(
+                        terminal_inclusions[term.usize_id(())].insert(
                             usize::from(rule.origin.id(())));
                         // break because next symbols can't be in the first set of the rule's origin
                         break;
@@ -718,43 +1189,207 @@ impl  Cfg {
 
             // initialize non_terms_to_process with terminal_inclusions
             non_terms_to_process.clear();
-            non_terms_to_process.extend(terminal_inclusions[usize::from(term.id(()))]
+            non_terms_to_process.extend(terminal_inclusions[term.usize_id(())]
                 .iter()
                 .map(|x| NonTerm{id: Idx::from(x)}));
 
             while non_terms_to_process.len() > 0 {
                 let non_term_to_process: NonTerm = non_terms_to_process.pop().unwrap();
 
-                if non_terms_processed.contains(usize::from(non_term_to_process.id(()))) {
+                if non_terms_processed.contains(non_term_to_process.usize_id(())) {
                     continue;
                 }
 
-                first_sets[usize::from(non_term_to_process.id(()))]
+                first_sets[non_term_to_process.usize_id(())]
                     .insert(usize::from(Some(term).id(())));
 
-                for new_non_term_index_to_process in non_terminal_inclusions[usize::from(non_term_to_process.id(()))].iter() {
+                for new_non_term_index_to_process in non_terminal_inclusions[non_term_to_process.usize_id(())].iter() {
                     let new_non_term_to_process: NonTerm = NonTerm { id: Idx::from(new_non_term_index_to_process) };
                     
-                    if !non_terms_processed.contains(usize::from(new_non_term_to_process.id(()))) {
+                    if !non_terms_processed.contains(new_non_term_to_process.usize_id(())) {
                         non_terms_to_process.push(new_non_term_to_process);
                     }
                 }
 
-                non_terms_processed.insert(usize::from(non_term_to_process.id(())));
+                non_terms_processed.insert(non_term_to_process.usize_id(()));
             }
 
         }
 
         for non_term in self.all_non_terminals() {
             if self.is_symbol_nullable(Symbol::NonTerm(non_term)) {
-                first_sets[usize::from(non_term.id(()))]
-                    .insert(usize::from(Option::<Term>::None.id(())));
+                first_sets[non_term.usize_id(())]
+                    .insert(Option::<Term>::None.usize_id(()));
             }
         }
 
         return first_sets;
     }
 
+    // -------------------------- follow sets
+    
+    /// returns the follow set of the the non-terminal symbol. The follow set of a non-terminal symbol is 
+    /// the set of terminal symbols that can be the first after the non-terminal symbol. for example:
+    /// A -> Aa|aB, B -> aBb|Cb, C -> Ac|c,  follow(A) = {a, c}, follow(B) = {b}, follow(C) = {b}
+    /// If nothing can go after an non-terminating symbol (loop), its follow set would be empty. example:
+    /// Start -> aA, A -> a|bA,  follow(Start) = {None}, follow(A) = {}
+    /// Start -> Aa, A -> a|bA,  follow(Start) = {None}, follow(A) = {a}
+    /// If nothing can go after a terminating symbol, its follow set would include None
+    pub fn get_follow_set(&self, symbol: Symbol) -> &BitSet<UINT> {
+        &self.first_sets
+            .get_or_init(|| self.compute_first_sets())[usize::from(self.symbol_id(symbol))]                
+    }
+
+    fn compute_follow_sets(&self) -> Vec<BitSet<UINT>> {
+
+
+        let mut follow_sets_non_terms: Vec<BitSet<UINT>> = 
+        vec![BitSet::new_filled(false, usize::from(self.nbr_terminals())+1); usize::from(self.nbr_non_terminals())];
+
+
+        // for each non-terminal symbol, maps to the set of non-terminal symbols that rely on it (inculde it)
+        let mut inclusions_first: Vec<BitSet<UINT>> = 
+        vec![BitSet::new_filled(false, usize::from(self.nbr_non_terminals())); usize::from(self.nbr_non_terminals())];
+        // inclusions[a] = {b, c, d} <=> first(a) included in follow(b), follow(c), and follow(d)
+
+        // for each non-terminal symbol, maps to the set of symbols that relies on it (inculde it)
+        let mut inclusions_follow: Vec<BitSet<UINT>> = 
+        vec![BitSet::new_filled(false, usize::from(self.nbr_symbols())); usize::from(self.nbr_non_terminals())];
+        // inclusions[a] = {b, c, d} <=> follow(a) included in follow(b), follow(c), and follow(d)
+
+        // for each terminal symbol and None, maps to the set of symbols that relies on it (inculde it)
+        let terminal_inclusions: Vec<BitSet<UINT>> = 
+        vec![BitSet::new_filled(false, usize::from(self.nbr_symbols())); usize::from(self.nbr_terminals())+1];
+        // inclusions[a] = [b, c, d] <=> a included in follow(b), follow(c), and follow(d)
+
+        
+        // initialize the inclusions
+        for (rule_id, rule) in self.all_rules() {
+            for (i, current_symbol) in rule.replacement.iter().enumerate() {
+            
+                match current_symbol {
+                    Symbol::Term(_) => {continue;}
+                    Symbol::NonTerm(current_non_term) => {
+
+                        if i == rule.replacement.len()-1 {
+                            // if a non-terminal symbol is at the end of the replacement of a rule, the follow set of 
+                            // the origin of the rule is included in the follow set of the end symbol
+                            inclusions_follow[usize::from(rule.origin.id(()))]
+                            .insert(current_non_term.usize_id(()));
+                            continue;
+                        }
+
+                        let next_symbol: Symbol = rule.replacement[i+1];
+
+                        match next_symbol {
+                            Symbol::NonTerm(next_non_term) => {
+                                // next_symbol is included in the follow set of the current_symbol
+                                terminal_inclusions[]
+                                terminal_inclusions[next_symbol].append(current_symbol)
+                            }
+                            Symbol::Term(next_term) => {
+
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        //         if next_symbol in self.Tsymbols:
+        //             # next_symbol is included in the follow set of the current_symbol
+        //             inclusions_terminal[next_symbol].append(current_symbol)
+
+        //         else:   # if next_symbol in self.NTsymbols:
+        //             # the first set of the next_symbol is included in the follow set of the current_symbol
+        //             inclusions_first[next_symbol].append(current_symbol)
+
+        // # NoSymbol is originally in the follow set of a NTsymbol if the NTsymbol is not on any rule replacement
+        // # NoSymbol will then be propagated along other Tsymbols
+        // for NTsymbol_not_produced in NTsymbols_not_produced:
+        //     inclusions_terminal[NoSymbol].append(NTsymbol_not_produced)
+
+
+        // # propagation of first sets of NTsymbols
+        // for NTsymbol_first in self.NTsymbols:
+        //     NTsymbols_to_process: list[Symbol] = inclusions_first[NTsymbol_first].copy()
+        //     NTsymbols_processed: set[Symbol] = set()
+
+        //     while len(NTsymbols_to_process) > 0:
+        //         NTsymbol_to_process = NTsymbols_to_process.pop()
+
+        //         if NTsymbol_to_process in NTsymbols_processed:
+        //             continue
+
+        //         first_set = self.get_first_set_of_symbol(NTsymbol_first)
+        //         first_set.discard(NoSymbol)
+        //         # NoSymbol would be in the follow set of a symbol only if the symbol is at the end of every single
+        //         # rule it appears in.
+        //         follow_sets_NTsymbols[NTsymbol_to_process].update(first_set)
+
+        //         for new_NTsymbol_to_process in inclusions_follow[NTsymbol_to_process]:
+        //             # follow(NTsymbol_to_process) included in follow(new_NTsymbol_to_process)
+        //             # which implies first(NTsymbol_to_process) included in follow(new_NTsymbol_to_process)
+        //             if not new_NTsymbol_to_process in NTsymbols_processed:
+        //                 NTsymbols_to_process.append(new_NTsymbol_to_process)
+
+        //         NTsymbols_processed.add(NTsymbol_to_process)
+
+
+        // # propagation of Tsymbols
+        // for Tsymbol in self.Tsymbols.union([NoSymbol]):
+        //     NTsymbols_to_process: list[Symbol] = inclusions_terminal[Tsymbol].copy()
+        //     NTsymbols_processed: set[Symbol] = set()
+
+        //     while len(NTsymbols_to_process) > 0:
+        //         NTsymbol_to_process = NTsymbols_to_process.pop()
+
+        //         if NTsymbol_to_process in NTsymbols_processed:
+        //             continue
+
+        //         follow_sets_NTsymbols[NTsymbol_to_process].add(Tsymbol)
+
+        //         for new_NTsymbol_to_process in inclusions_follow[NTsymbol_to_process]:
+        //             # follow(NTsymbol_to_process) included in follow(new_NTsymbol_to_process)
+        //             # which implies Tsymbol is in follow(new_NTsymbol_to_process)
+        //             if not new_NTsymbol_to_process in NTsymbols_processed:
+        //                 NTsymbols_to_process.append(new_NTsymbol_to_process)
+
+        //         NTsymbols_processed.add(NTsymbol_to_process)
+
+
+        // # ----------------------------------------------------------------
+        // # handles Tsymbols separately, as they are not needed for NTsymbols
+        // follow_sets_Tsymbols={Tsymbol: set() for Tsymbol in self.Tsymbols}
+
+        // for rule in self.rules:
+        //     for i, current_symbol in enumerate(rule.replacement):
+
+        //         if current_symbol in self.NTsymbols:
+        //             continue
+
+        //         if i==len(rule.replacement)-1:
+        //             # if Tsymbol is at the end of the replacement of a rule, the follow set of the origin of the
+        //             # rule is included in the follow set of the end symbol
+        //             follow_sets_Tsymbols[current_symbol].update(follow_sets_NTsymbols[rule.origin])
+        //             continue
+
+        //         next_symbol = rule.replacement[i+1]
+
+        //         if next_symbol in self.Tsymbols:
+        //             # next_symbol is included in the follow set of the current_symbol
+        //             follow_sets_Tsymbols[current_symbol].add(next_symbol)
+
+        //         else:   # if next_symbol in self.NTsymbols:
+        //             # the first set of the next_symbol is included in the follow set of the current_symbol
+        //             follow_sets_Tsymbols[current_symbol].update(self.get_first_set_of_symbol(next_symbol))
+
+
+        // follow_sets = follow_sets_NTsymbols
+        // follow_sets.update(follow_sets_Tsymbols)
+
+        follow_sets_non_terms
+    }
+    
 
 
 }

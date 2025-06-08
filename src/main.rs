@@ -7,25 +7,9 @@ mod formal_language;
 use strum::{EnumCount, IntoEnumIterator};
 use strum_macros::{EnumCount as EnumCountMacro, EnumIter};
 
-use derive_more::{Add, Sub, Mul, Div, AddAssign, SubAssign, MulAssign, DivAssign};
-
 
 type UINT = u8; // used for Bitsets, might slightly affect performance and memory usage?
 
-#[derive(Add, Sub, Mul, Div, AddAssign, SubAssign, MulAssign, DivAssign, PartialEq, Debug, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct Idx(u32);
-
-impl From<usize> for Idx {
-    fn from(value: usize) -> Self {
-        Self(u32::try_from(value).expect("ids must be storable in the u32 type") )
-    }
-}
-
-impl From<Idx> for usize {
-    fn from(value: Idx) -> Self {
-        value.0 as usize
-    }
-}
 
 // use std::cell::OnceCell;
 

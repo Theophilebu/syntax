@@ -1,16 +1,17 @@
 use num::{Unsigned, PrimInt};
 use std::fmt::Binary;
 use itertools::Itertools;
+use bumpalo::{collections::Vec as BumpVec, vec as bump_vec, Bump};
 
 
 #[derive(Debug, Clone)]
-pub struct BitSet<UINT: Unsigned + PrimInt + Binary> 
+pub struct BumpBitSet<'bump, UINT: Unsigned + PrimInt + Binary> 
 {
-    data: Vec<UINT>,
+    data: BumpVec<'bump, UINT>,
     size: usize,
 }
 
-impl <UINT> BitSet<UINT>
+impl <'bump, UINT> BumpBitSet<'bump, UINT>
 where 
     UINT: Unsigned + PrimInt + Binary,
 {
@@ -28,22 +29,23 @@ where
     }
 
 
-    pub fn new_filled(value: bool, size: usize) -> BitSet<UINT> {
+    pub fn new_filled_in(bump: &'bump Bump, value: bool, size: usize) -> Self {
         let uint_value = match value {
             true => {UINT::max_value()}
             false => {UINT::min_value()}
         };
-        BitSet {
-            data: vec![uint_value; (size + 7) / (8 * size_of::<UINT>())],
+        
+        BumpBitSet {
+            data: bump_vec![in &bump; uint_value; (size + 7) / (8 * size_of::<UINT>())],
             size: size,
         }
     }
 
-    pub fn new(data: Vec<UINT>, size: usize) -> BitSet<UINT> {
+    pub fn new_in(bump: &'bump Bump, data: &[UINT], size: usize) -> Self {
         assert_eq!(data.len(), (size + 7) / (8 * size_of::<UINT>()),
             "the size of the table is not compatible with the given size");
         Self {
-            data,
+            data: BumpVec::from_iter_in(data.iter().map(|x| *x), bump),
             size,
         }
     }
@@ -101,13 +103,13 @@ where
     }
 
     
-    pub fn union(&self, other: &Self) -> Self {
+    pub fn union(&self, bump: &'bump Bump, other: &Self) -> Self {
     
         if self.size() != other.size() {
             panic!("operations on bitsets with different sizes are not allowed");
         }
 
-        let mut new_bitset: BitSet<UINT> = BitSet::new_filled(false, self.size);
+        let mut new_bitset: BumpBitSet<UINT> = BumpBitSet::new_filled_in(bump, false, self.size);
 
         for i in 0..self.nbr_used_uints() {
             new_bitset.data[i] = self.data[i] | other.data[i];
@@ -116,12 +118,12 @@ where
         new_bitset
     }
 
-    pub fn intersection(&self, other: &Self) -> Self {
+    pub fn intersection(&self, bump: &'bump Bump, other: &Self) -> Self {
         if self.size() != other.size() {
             panic!("operations on bitsets with different sizes are not allowed");
         }
 
-        let mut new_bitset: BitSet<UINT> = BitSet::new_filled(false, self.size);
+        let mut new_bitset: BumpBitSet<UINT> = BumpBitSet::new_filled_in(bump, false, self.size);
 
         for i in 0..self.nbr_used_uints() {
             new_bitset.data[i] = self.data[i] & other.data[i];
@@ -130,12 +132,12 @@ where
         new_bitset
     }
 
-    pub fn difference(&self, other: &Self) -> Self {
+    pub fn difference(&self, bump: &'bump Bump, other: &Self) -> Self {
         if self.size() != other.size() {
             panic!("operations on bitsets with different sizes are not allowed");
         }
 
-        let mut new_bitset: BitSet<UINT> = BitSet::new_filled(false, self.size);
+        let mut new_bitset: BumpBitSet<UINT> = BumpBitSet::new_filled_in(bump, false, self.size);
 
         for i in 0..self.nbr_used_uints() {
             new_bitset.data[i] = self.data[i] & !other.data[i];
@@ -144,12 +146,12 @@ where
         new_bitset
     }
 
-    pub fn symmetric_difference(&self, other: &Self) -> Self {
+    pub fn symmetric_difference(&self, bump: &'bump Bump, other: &Self) -> Self {
         if self.size() != other.size() {
             panic!("operations on bitsets with different sizes are not allowed");
         }
 
-        let mut new_bitset: BitSet<UINT> = BitSet::new_filled(false, self.size);
+        let mut new_bitset: BumpBitSet<UINT> = BumpBitSet::new_filled_in(bump, false, self.size);
 
         for i in 0..self.nbr_used_uints() {
             new_bitset.data[i] = self.data[i] ^ other.data[i];
@@ -158,8 +160,8 @@ where
         new_bitset
     }
 
-    pub fn complement(&self) -> Self {
-        let mut new_bitset: BitSet<UINT> = BitSet::new_filled(false, self.size);
+    pub fn complement(&self, bump: &'bump Bump) -> Self {
+        let mut new_bitset: BumpBitSet<UINT> = BumpBitSet::new_filled_in(bump, false, self.size);
 
         for i in 0..self.nbr_used_uints() {
             new_bitset.data[i] = !self.data[i];
@@ -169,8 +171,8 @@ where
     }
 
 
-    pub fn concatenate(&self, other: &Self) -> BitSet<UINT> {
-        let mut new_bitset: BitSet<UINT> = BitSet::<UINT>::new_filled(false, self.size+other.size);
+    pub fn concatenate(&self, bump: &'bump Bump, other: &Self) -> Self {
+        let mut new_bitset: BumpBitSet<UINT> = BumpBitSet::<UINT>::new_filled_in(bump, false, self.size+other.size);
 
         for i in 0..self.nbr_used_uints() {
             new_bitset.data[i] = self.data[i];
@@ -331,7 +333,7 @@ where
     }
 
 
-    pub fn iter<'se>(&'se self) -> BitSetIter<'se, UINT> {
+    pub fn iter<'se>(&'se self) -> BumpBitSetIter<'se, 'bump, UINT> {
         self.into_iter()
     }
 
@@ -342,11 +344,11 @@ where
 // -------------------------- Iterator -----------------------
 
 
-pub struct BitSetIter<'bitset, UINT>
+pub struct BumpBitSetIter<'bitset, 'bump, UINT>
 where 
     UINT: Unsigned + PrimInt + Binary,
 {
-    bitset: &'bitset BitSet<UINT>,
+    bitset: &'bitset BumpBitSet<'bump, UINT>,
 
     uint_index: usize,
     index_in_uint: usize,
@@ -356,15 +358,15 @@ where
 }
 
 
-impl <'bitset, UINT> IntoIterator for &'bitset BitSet<UINT>
+impl <'bitset, 'bump, UINT> IntoIterator for &'bitset BumpBitSet<'bump, UINT>
 where 
     UINT: Unsigned + PrimInt + Binary,
 {
     type Item = usize;
-    type IntoIter = BitSetIter<'bitset, UINT>;
+    type IntoIter = BumpBitSetIter<'bitset, 'bump, UINT>;
 
     fn into_iter(self) -> Self::IntoIter {
-        BitSetIter {
+        BumpBitSetIter {
             bitset: self,
 
             uint_index: 0,
@@ -376,7 +378,7 @@ where
     }
 }
 
-impl <'bitset, UINT> Iterator for BitSetIter<'bitset, UINT>
+impl <'bitset, 'bump, UINT> Iterator for BumpBitSetIter<'bitset, 'bump, UINT>
 where 
     UINT: Unsigned + PrimInt + Binary,
 {
@@ -431,11 +433,11 @@ where
 // -------------------------- Iterator mutable ref -----------------------
 
 
-pub struct MutBitSetIter<'bitset, UINT>
+pub struct MutBumpBitSetIter<'bitset, 'bump, UINT>
 where 
     UINT: Unsigned + PrimInt + Binary,
 {
-    pub bitset: &'bitset mut BitSet<UINT>,
+    pub bitset: &'bitset mut BumpBitSet<'bump, UINT>,
 
     uint_index: usize,
     index_in_uint: usize,
@@ -445,7 +447,7 @@ where
 }
 
 
-impl <'bitset, UINT> MutBitSetIter<'bitset, UINT>
+impl <'bitset, 'bump, UINT> MutBumpBitSetIter<'bitset, 'bump, UINT>
 where
     UINT: Unsigned + PrimInt + Binary,
 {
@@ -460,17 +462,17 @@ where
 }
 
 
-impl <'bitset, UINT> IntoIterator for &'bitset mut BitSet<UINT>
+impl <'bitset, 'bump, UINT> IntoIterator for &'bitset mut BumpBitSet<'bump, UINT>
 where
     UINT: Unsigned + PrimInt + Binary,
 {
     type Item = usize;
-    type IntoIter = MutBitSetIter<'bitset, UINT>;
+    type IntoIter = MutBumpBitSetIter<'bitset, 'bump, UINT>;
 
     fn into_iter(self) -> Self::IntoIter {
         let working_uint = self.data[0];
         let nbr_ones_in_uint = working_uint.count_ones();
-        MutBitSetIter{
+        MutBumpBitSetIter{
             bitset: self,
 
             uint_index: 0,
@@ -482,7 +484,7 @@ where
     }
 }
 
-impl <'bitset, UINT> Iterator for MutBitSetIter<'bitset, UINT>
+impl <'bitset, 'bump, UINT> Iterator for MutBumpBitSetIter<'bitset,'bump,  UINT>
 where
     UINT: Unsigned + PrimInt + Binary,
 {
@@ -538,15 +540,20 @@ where
 
 #[cfg(test)]
 mod tests{
-    use crate::datastructures::bitset::{BitSet, BitSetIter, MutBitSetIter};
+    use bumpalo::Bump;
+
+    use crate::datastructures::bump_bitset::{BumpBitSet, BumpBitSetIter, MutBumpBitSetIter};
 
     #[test]
     fn test1(){
+
+        let bump: Bump = Bump::with_capacity(1000);
+
         let table1: Vec<u8> = vec![0; 2];
         let table2: Vec<u8> = vec![0; 2];
 
-        let mut bitset1: BitSet<u8>  = BitSet::new(table1, 10);
-        let mut bitset2: BitSet<u8> = BitSet::new(table2, 10);
+        let mut bitset1: BumpBitSet<u8>  = BumpBitSet::new_in(&bump, &table1, 10);
+        let mut bitset2: BumpBitSet<u8> = BumpBitSet::new_in(&bump, &table2, 10);
 
         for i in 0..bitset1.nbr_used_uints() {
             let rand_value: u8 = ((197 + i*157)%255) as u8 & 0b01101001;
@@ -571,10 +578,10 @@ mod tests{
         bitset1.insert(3);
         bitset1.print();
 
-        (bitset1.union(&bitset2)).print();
-        (bitset1.intersection(&bitset2)).print();
-        (bitset1.difference(&bitset2)).print();
-        (bitset1.symmetric_difference(&bitset2)).print();
+        (bitset1.union(&bump, &bitset2)).print();
+        (bitset1.intersection(&bump, &bitset2)).print();
+        (bitset1.difference(&bump, &bitset2)).print();
+        (bitset1.symmetric_difference(&bump, &bitset2)).print();
 
         bitset1.print();
         bitset2.print();
@@ -583,10 +590,10 @@ mod tests{
             println!("i: {}, value: {}", i, value);
         }
 
-        (bitset1.concatenate(&bitset2)).print();
+        (bitset1.concatenate(&bump, &bitset2)).print();
         bitset1.print();
 
-        let mut it: MutBitSetIter<u8> = (&mut bitset1).into_iter();
+        let mut it: MutBumpBitSetIter<u8> = (&mut bitset1).into_iter();
         for i in 0..5 {
             it.bitset.insert(i);
             while let Some(symb) = it.next() {
@@ -597,7 +604,3 @@ mod tests{
         
     }
 }
-
-
-
-

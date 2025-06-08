@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use crate::formal_language::*;
+use crate::datastructures::indexing::Idx;
 
 
 pub fn create_regex_grammar() -> Cfg {
@@ -188,7 +189,8 @@ mod tests{
     use std::path::Display;
 
     use super::create_regex_grammar;
-    use crate::{datastructures::bitset::BitSet, formal_language::*, Idx};
+    use crate::datastructures::{bitset::BitSet, indexing::Idx};
+    use crate::formal_language::*;
 
     #[test]
     fn test1(){
