@@ -8,7 +8,7 @@ num = "0.4.3"
 strum = "0.27"
 strum_macros = "0.27"
 thiserror = "2.0.12"
-derive_more = "0.99"
+derive_more = {version = "1.0.0-beta", features = ["from"]}
 delegate = "0.13.3"
 itertools = "0.12"
 bumpalo = { version = "3.18", features = ["collections"] }

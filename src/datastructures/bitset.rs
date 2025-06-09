@@ -317,7 +317,7 @@ where
         println!("{s}");
     }
 
-    pub fn print_set<'gram>(&self, f: impl Fn(usize) -> &'gram str) {
+    pub fn print_set<'a>(&self, f: impl Fn(usize) -> &'a str) {
         let mut out: String = String::new();
         out.push('{');
 

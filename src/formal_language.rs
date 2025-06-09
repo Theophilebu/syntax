@@ -8,10 +8,10 @@ use thiserror::Error;
 use delegate::delegate;
 
 use crate::datastructures::indexing::{Indexing, Handle};
-use crate::UINT;
+use crate::BitSetUINT;
 
 // avoid useless generic parameter
-type BitSet = crate::datastructures::bitset::BitSet<UINT>;
+type BitSet = crate::datastructures::bitset::BitSet<BitSetUINT>;
 
 
 // --------------------------------------------
@@ -851,16 +851,16 @@ pub struct Cfg {
     // -------------- cached values
 
     // indexed by produced symbols
-    rules_producing_each_symbol: OnceCell<Vec<BitSet<UINT>>>,
+    rules_producing_each_symbol: OnceCell<Vec<BitSet<BitSetUINT>>>,
 
     // indexed by symbols
-    are_symbols_nullable: OnceCell<BitSet<UINT>>,
+    are_symbols_nullable: OnceCell<BitSet<BitSetUINT>>,
 
     // indexed by non-terminal symbols, bitset by terminal symbols
-    first_sets: OnceCell<Vec<BitSet<UINT>>>,
+    first_sets: OnceCell<Vec<BitSet<BitSetUINT>>>,
 
     // indexed by symbols, bitset by terminal symbols
-    follow_sets: OnceCell<Vec<BitSet<UINT>>>,
+    follow_sets: OnceCell<Vec<BitSet<BitSetUINT>>>,
 
     /*
     get_NTsymbols_implied_by_rule
@@ -1006,7 +1006,7 @@ impl  Cfg {
     /// returns an iterator which go through each (rule_id, rule) of the grammar that can produce produced_symbol
     pub fn get_rules_producing(&self, produced_symbol: Symbol) -> impl Iterator<Item = (CfgRuleId, &CfgRule)> {
         
-        let rules_producing_each_symbol: &Vec<BitSet<UINT>> = 
+        let rules_producing_each_symbol: &Vec<BitSet<BitSetUINT>> = 
             self.rules_producing_each_symbol.get_or_init(|| self.compute_rules_producing_each_symbol());
         (&rules_producing_each_symbol[produced_symbol.usize_id(self.e())])
             .iter()
@@ -1014,11 +1014,11 @@ impl  Cfg {
                 self.get_rule_by_id(CfgRuleId(Idx::from(rule_id)))))
     }
 
-    fn compute_rules_producing_each_symbol(&self) -> Vec<BitSet<UINT>> {
+    fn compute_rules_producing_each_symbol(&self) -> Vec<BitSet<BitSetUINT>> {
         // for each symbol, gives a list of the rules whose replacement contains the symbol
 
         // indexed by symbols produced
-        let mut rules_producing_each_symbol: Vec<BitSet<UINT>> = 
+        let mut rules_producing_each_symbol: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_rules())); usize::from(self.nbr_symbols())];
         
         for (rule_id, rule) in self.all_rules() {
@@ -1053,13 +1053,13 @@ impl  Cfg {
         self.get_rule_by_id(rule_id).replacement.iter().all(|&symbol| self.is_symbol_nullable(symbol))
     }
 
-    fn compute_are_symbols_nullable(&self) -> BitSet<UINT> {
+    fn compute_are_symbols_nullable(&self) -> BitSet<BitSetUINT> {
         // adapted from here:
         // https://cstheory.stackexchange.com/questions/2479/quickly-finding-empty-string-producing-nonterminals-in-a-cfg
 
 
         // initially, all symbols are considered non-nullable
-        let mut are_nullable: BitSet<UINT> = BitSet::new_filled(false, usize::from(self.nbr_non_terminals()));
+        let mut are_nullable: BitSet<BitSetUINT> = BitSet::new_filled(false, usize::from(self.nbr_non_terminals()));
 
         // number of distinct non_terminals marked as non-nullable that the index rule can produce
         // will be initialised later
@@ -1115,7 +1115,7 @@ impl  Cfg {
     /// If the symbol loops to itself without any terminal symbol before, it doesn't affect the first set.
     ///    for example: A -> Aa|b,  first(A) = {b}
     /// The first set of a symbol includes None iff it is nullable """
-    pub fn get_first_set(&self, symbol: Symbol) -> Cow<BitSet<UINT>> {
+    pub fn get_first_set(&self, symbol: Symbol) -> Cow<BitSet<BitSetUINT>> {
         match symbol {
             Symbol::NonTerm(non_term) => {
                 Cow::Borrowed(
@@ -1124,7 +1124,7 @@ impl  Cfg {
                     )
             }
             Symbol::Term(term) => {
-                let mut first_set: BitSet<UINT> = BitSet::new_filled(false, usize::from(self.nbr_terminals())+1);
+                let mut first_set: BitSet<BitSetUINT> = BitSet::new_filled(false, usize::from(self.nbr_terminals())+1);
                 // set containing only the terminal symbol itself
                 first_set.insert(usize::from(Some(term).id(())));
                 
@@ -1133,22 +1133,22 @@ impl  Cfg {
         }
     }
 
-    fn compute_first_sets(&self) -> Vec<BitSet<UINT>> {
+    fn compute_first_sets(&self) -> Vec<BitSet<BitSetUINT>> {
 
 
 
         // for each non-terminal symbol, contains a bitset of optional terminal symbols
         // the terminal symbol case is trivial so not computed
-        let mut first_sets: Vec<BitSet<UINT>> = 
+        let mut first_sets: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_terminals())+1); usize::from(self.nbr_non_terminals())];
 
         // for each non-terminal symbol, maps to the set of non-terminal symbols that rely on it (inculde it)
-        let mut non_terminal_inclusions: Vec<BitSet<UINT>> = 
+        let mut non_terminal_inclusions: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_non_terminals())); usize::from(self.nbr_non_terminals())];
         // inclusions[a] = {b, c, d} <=> first(a) included in first(b), first(c), and first(d)
 
         // for each terminal symbol, maps to the set of non-terminal symbols that relies on it (inculde it)
-        let mut terminal_inclusions: Vec<BitSet<UINT>> = 
+        let mut terminal_inclusions: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_non_terminals())); usize::from(self.nbr_terminals())];
         // terminal_inclusions[a] = {b, c, d} <=> a included in first(b), first(c), and first(d)
 
@@ -1183,7 +1183,7 @@ impl  Cfg {
         // can actually have a bigger size than self.nbr_non_terminals() because duplicates are not discarded instantly
         let mut non_terms_to_process: Vec<NonTerm> = Vec::with_capacity(usize::from(self.nbr_non_terminals()));
         // let non_terms_to_proces_set: BitSet<UINT> = BitSet::new_filled(false, usize::from(self.nbr_non_terminals()));
-        let mut non_terms_processed: BitSet<UINT> = BitSet::new_filled(false, usize::from(self.nbr_non_terminals()));
+        let mut non_terms_processed: BitSet<BitSetUINT> = BitSet::new_filled(false, usize::from(self.nbr_non_terminals()));
         for term in self.all_terminals() {
             non_terms_processed.clear();
 
@@ -1235,30 +1235,30 @@ impl  Cfg {
     /// Start -> aA, A -> a|bA,  follow(Start) = {None}, follow(A) = {}
     /// Start -> Aa, A -> a|bA,  follow(Start) = {None}, follow(A) = {a}
     /// If nothing can go after a terminating symbol, its follow set would include None
-    pub fn get_follow_set(&self, symbol: Symbol) -> &BitSet<UINT> {
+    pub fn get_follow_set(&self, symbol: Symbol) -> &BitSet<BitSetUINT> {
         &self.first_sets
             .get_or_init(|| self.compute_first_sets())[usize::from(self.symbol_id(symbol))]                
     }
 
-    fn compute_follow_sets(&self) -> Vec<BitSet<UINT>> {
+    fn compute_follow_sets(&self) -> Vec<BitSet<BitSetUINT>> {
 
 
-        let mut follow_sets_non_terms: Vec<BitSet<UINT>> = 
+        let mut follow_sets_non_terms: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_terminals())+1); usize::from(self.nbr_non_terminals())];
 
 
         // for each non-terminal symbol, maps to the set of non-terminal symbols that rely on it (inculde it)
-        let mut inclusions_first: Vec<BitSet<UINT>> = 
+        let mut inclusions_first: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_non_terminals())); usize::from(self.nbr_non_terminals())];
         // inclusions[a] = {b, c, d} <=> first(a) included in follow(b), follow(c), and follow(d)
 
         // for each non-terminal symbol, maps to the set of symbols that relies on it (inculde it)
-        let mut inclusions_follow: Vec<BitSet<UINT>> = 
+        let mut inclusions_follow: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_symbols())); usize::from(self.nbr_non_terminals())];
         // inclusions[a] = {b, c, d} <=> follow(a) included in follow(b), follow(c), and follow(d)
 
         // for each terminal symbol and None, maps to the set of symbols that relies on it (inculde it)
-        let terminal_inclusions: Vec<BitSet<UINT>> = 
+        let terminal_inclusions: Vec<BitSet<BitSetUINT>> = 
         vec![BitSet::new_filled(false, usize::from(self.nbr_symbols())); usize::from(self.nbr_terminals())+1];
         // inclusions[a] = [b, c, d] <=> a included in follow(b), follow(c), and follow(d)
 

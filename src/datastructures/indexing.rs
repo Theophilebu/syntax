@@ -74,7 +74,7 @@ pub trait Handle: Sized {
         (self.id(context)).into_usize()
     }
 
-    fn from_usize<'c>(usize_id: usize, context: Self::Context<'c>) -> Self {
+    fn from_usize_id<'c>(usize_id: usize, context: Self::Context<'c>) -> Self {
         Self::from_id(Self::Id::from_usize(usize_id), context)
     }
 
@@ -112,7 +112,7 @@ impl <T: Handle> Handle for Option<T> {
     fn from_id<'c>(id: Self::Id, context: Self::Context<'c>) -> Self {
         match id.into_usize() {
             0 => Self::None,
-            _ => Self::Some(T::from_usize(id.into_usize() - 1, context)),
+            _ => Self::Some(T::from_usize_id(id.into_usize() - 1, context)),
         }
         // can't match id directly because of the lack of information about its type
     }

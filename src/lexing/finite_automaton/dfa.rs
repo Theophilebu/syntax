@@ -1,76 +1,90 @@
-use thiserror::Error;
+//use thiserror::Error;
 
-use super::super::machine::{Machine, RunInfo};
-use crate::{datastructures::option_uint::OptionUint, lexing::machine::MachineError};
+use super::super::machine::{Machine, RunInfo, MachineError};
+use crate::datastructures::indexing::{Handle, Indexing};
 use crate::formal_language::Alphabet;
 
-use super::{ReturnValue, FiniteAutomatonState, StateTransition, SINT};
+use super::{ReturnValue, StateTransition, FAState};
+
+use crate::Result;
+use crate::Error;
+
+// region: error handling
 
 
-
-
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum DfaError {
-    #[error("Transitions {transition1:?} and {transition2:?} are incompatible, it would introduce nondeterminism")]
+    // #[error("Transitions {transition1:?} and {transition2:?} are incompatible, it would introduce nondeterminism")]
     NotDeterministic{transition1: StateTransition, transition2: StateTransition},
 
-    #[error("State Transition {transition:?} has the character {} which is not in the alphabet", transition.char_read)]
+    // #[error("State Transition {transition:?} has the character {} which is not in the alphabet", transition.char_read)]
     InvalidTransitionChar{transition: StateTransition},
 
-    #[error("State Transition {transition:?} has the origin state id {} which is not a valid state id", transition.origin_state_id)]
+    // #[error("State Transition {transition:?} has the origin state id {} which is not a valid state id", transition.origin_state_id)]
     InvalidTransitionOrigin{transition: StateTransition},
 
-    #[error("State Transition {transition:?} has the target state id {} which is not a valid state id", transition.target_state_id)]
+    // #[error("State Transition {transition:?} has the target state id {} which is not a valid state id", transition.target_state_id)]
     InvalidTransitionTarget{transition: StateTransition},
 
-    #[error("The number of states({nbr_states}) is too large (max={})", SINT::MAX)]
+    // #[error("The number of states({nbr_states}) is too large (max={})", OptionUint::max_value())]
     TooManyStates{nbr_states: usize},
 
-    #[error("The number of states {table_height} in the table doesn't match the length({vec_len}) of the vector states")]
+    // #[error("The number of states {table_height} in the table doesn't match the length({vec_len}) of the vector states")]
     WrongNbrStates{table_height: usize, vec_len: usize},
 
-    #[error("The number of states {table_width} in the table doesn't match the size({alphabet_size}) of the alphabet")]
+    // #[error("The number of states {table_width} in the table doesn't match the size({alphabet_size}) of the alphabet")]
     WrongNbrChars{table_width: usize, alphabet_size: usize},
 
-    #[error("The number of states and valid chars can't be 0")]
+    // #[error("The number of states and valid chars can't be 0")]
     EmptyTable,
 
-    #[error("The table passed should be rectangular")]
+    // #[error("The table passed should be rectangular")]
     NonRectTable,
     
-    #[error("The char {c} is not in the alphabet")]
+    // #[error("The char {c} is not in the alphabet")]
     InvalidChar{c: char},
 
-    #[error("The state id {state_id} is not valid")]
-    InvalidStateId{state_id: usize},
+    // #[error("The state id {state_id} is not valid")]
+    InvalidState{state: FAState},
 }
 
+impl std::fmt::Display for DfaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for DfaError {}
+/*
 impl From<DfaError> for MachineError<DfaError> {
     fn from(value: DfaError) -> Self {
         MachineError::Other { other_err: value }
     }
 }
 
+*/
 
-pub struct Dfa<'alp, RETURN: Clone, DATA>
+// endregion
+
+pub struct Dfa<'alp, RETURN: Clone>
 {
-    // start_state is 0
-    // can handle up to 32768 states (change SINT for more(why though))
-    transition_table: Vec<Vec<OptionUint<SINT>>>,
-    states: Vec<FiniteAutomatonState<RETURN, DATA>>,
+    // start_state is 1
+    // can handle up to 65535 states
+    transition_table: Vec<Vec<FAState>>,
+    return_values: Vec<ReturnValue<RETURN>>,
     alphabet: &'alp Alphabet,
 
-    // transition_table[origin_state_id][symbol_read_id] = target_state_id
+    // transition_table[origin_state_id][symbol_read_id] = target_state
 }
 
-impl <'alp, RETURN: Clone, DATA> Dfa<'alp, RETURN, DATA>
+impl <'alp, RETURN: Clone> Dfa<'alp, RETURN>
 {
     pub fn nbr_chars(&self) -> usize {
         self.alphabet.size()
     }
 
-    pub fn nbr_states(&self) -> usize {
-        self.states.len()
+    pub fn nbr_states(&self) -> <FAState as Handle>::Id {
+        <FAState as Handle>::Id::from_usize(self.return_values.len())
     }
 
     pub fn char_id(&self, c: char) -> Option<usize> {
@@ -81,38 +95,40 @@ impl <'alp, RETURN: Clone, DATA> Dfa<'alp, RETURN, DATA>
         !self.char_id(c).is_none()
     }
 
-    pub fn is_state_id_valid(&self, state_id: usize) -> bool {
-        state_id<self.nbr_states()
+    pub fn is_state_valid(&self, state: FAState) -> bool {
+        // 0<state.id(()) && 
+        state.id(())<self.nbr_states()
     }
 
-    pub fn from_table(table: Vec<Vec<OptionUint<SINT>>>, states: Vec<FiniteAutomatonState<RETURN, DATA>>,
-    alphabet: &'alp Alphabet) -> Result<Self, DfaError> {
+    pub fn from_table(table: Vec<Vec<FAState>>, return_values: Vec<ReturnValue<RETURN>>,
+    alphabet: &'alp Alphabet) -> Result<Self> {
 
         if table.len()==0 || table[0].len()==0 {
-            return Err(DfaError::EmptyTable);
+            return Err(Box::new(DfaError::EmptyTable));
+            
         }
 
-        if table.len() != states.len() {
-            return Err(DfaError::WrongNbrStates { table_height: table.len(), vec_len: states.len() });
+        if table.len() != return_values.len() {
+            return Err(Box::new(DfaError::WrongNbrStates { table_height: table.len(), vec_len: return_values.len() }));
         }
 
         if table[0].len() != alphabet.size() {
-            return Err(DfaError::WrongNbrChars { table_width: table[0].len(), alphabet_size: alphabet.size() });
+            return Err(Box::new(DfaError::WrongNbrChars { table_width: table[0].len(), alphabet_size: alphabet.size() }));
         }
 
         let nbr_states: usize = table.len();
-        if nbr_states>(SINT::MAX as usize) {
-            return Err(DfaError::TooManyStates { nbr_states });
+        if nbr_states>(FAState::MAX.into_usize()) {
+            return Err(Box::new(DfaError::TooManyStates { nbr_states }));
         }
 
         let nbr_chars: usize = table[0].len();
-        if table.iter().any(|v:&Vec<OptionUint<SINT>>| v.len()!=nbr_chars) {
-            return Err(DfaError::NonRectTable);
+        if table.iter().any(|v:&Vec<FAState>| v.len()!=nbr_chars) {
+            return Err(Box::new(DfaError::NonRectTable));
         }
 
         Ok(Dfa {
             transition_table: table,
-            states,
+            return_values,
             alphabet,
         })
     }
@@ -142,12 +158,12 @@ impl <'alp, RETURN: Clone, DATA> Dfa<'alp, RETURN, DATA>
 
             // checks origin
             if transition.origin_state_id>=nbr_states {
-                return Err(DfaError::InvalidTransitionChar {transition});
+                return Err(DfaError::InvalidTransitionOrigin {transition});
             }
 
             // checks target
             if transition.target_state_id>=nbr_states {
-                return Err(DfaError::InvalidTransitionChar {transition});
+                return Err(DfaError::InvalidTransitionTarget {transition});
             }
 
 
@@ -173,7 +189,7 @@ impl <'alp, RETURN: Clone, DATA> Dfa<'alp, RETURN, DATA>
         
         Ok(Dfa{
             transition_table: table,
-            states,
+            return_values: states,
             alphabet,
         })
     }
@@ -194,7 +210,7 @@ impl <'alp, RETURN: Clone, DATA> Dfa<'alp, RETURN, DATA>
         if !self.is_state_id_valid(state_id) {
             return Err(DfaError::InvalidStateId { state_id });
         }
-        Ok(&self.states[state_id])
+        Ok(&self.return_values[state_id])
     }
 }
 

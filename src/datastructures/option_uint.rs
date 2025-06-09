@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use num::{Signed, PrimInt};
 
 
@@ -30,6 +32,10 @@ impl <SINT: Signed + PrimInt> OptionUint<SINT> {
             Some(some_value) => self.signed_value = SINT::from(some_value).unwrap(),
         }
     }
+
+    pub fn max_value() -> SINT {
+        SINT::max_value()
+    }
 }
 
 impl <SINT: Signed + PrimInt> From<Option<usize>> for OptionUint<SINT> {
@@ -39,6 +45,13 @@ impl <SINT: Signed + PrimInt> From<Option<usize>> for OptionUint<SINT> {
             None => OptionUint{signed_value: -SINT::one()},
             Some(some_value) => OptionUint{signed_value: SINT::from(some_value).unwrap()},
         } 
+    }
+}
+
+impl <SINT: Signed + PrimInt> Display for OptionUint<SINT> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#?}", self.get_value())
+        
     }
 }
 
