@@ -3,11 +3,13 @@ pub mod nfa;
 
 use crate::datastructures::indexing::Handle;
 
+use super::char_class::CompactExtendedChar;
+
 // avoid useless generic parameter
 type BitSet = crate::datastructures::bitset::BitSet<crate::BitSetUINT>;
 
-// used to represent epsilon-transitions in nfa
-const EPS: char = char::from_u32(0xE000).unwrap();  // private use area
+pub type FAStateId = <FAState as Handle>::Id;
+
 
 
 /// finite automaton state
@@ -46,6 +48,7 @@ impl FAState {
 }
 
 
+#[derive(Debug, Clone)]
 pub enum ReturnValue<RETURN: Clone>
 {
     NotAccepted,
@@ -55,15 +58,7 @@ pub enum ReturnValue<RETURN: Clone>
 
 #[derive(Debug, Clone)]
 pub struct StateTransition {
-    pub origin_state_id: FAState,
-    pub char_read: char,
-    pub target_state_id: FAState,
-}
-
-#[derive(Debug, Clone)]
-struct StateTransitionSet
-{
-    origin_state_id: FAState,
-    char_read: char,    // EPS is allowed
-    target_state_ids: FAState,
+    pub origin_state: FAState,
+    pub char_read: CompactExtendedChar,
+    pub target_state: FAState,
 }

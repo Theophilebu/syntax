@@ -1,53 +1,53 @@
-use std::error::Error;
 
-use thiserror::Error;
+// region: error handling
+use derive_more::From;
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, From)]
+pub enum AutomatonError<OtherError: std::fmt::Debug>
+{
+    // #[error("can't update a machine if the machine is finished")]
+    Finished,
+
+    //#[error("{}", other_err)]
+    #[from]
+    Other(OtherError),
+}
+
+impl <OtherError: std::fmt::Debug> std::fmt::Display for AutomatonError<OtherError> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl <OtherError: std::fmt::Debug> std::error::Error for AutomatonError<OtherError> {}
+
+
+// endregion
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RunInfo {
     Ready,
     Running,
     Finished,
 }
 
-#[derive(Error, Debug)]
-pub enum MachineError<OTHER_ERROR: Error>
-where
-    MachineError<OTHER_ERROR>: From<OTHER_ERROR>
+pub trait Automaton<INPUT, OUTPUT, ERROR: std::fmt::Debug>
 {
-    #[error("can't update a machine if the machine is finished")]
-    Finished,
-
-    #[error("{}", other_err)]
-    Other {other_err: OTHER_ERROR},
-}
-
-pub trait Machine<INPUT, OUTPUT, ERROR: Error>
-where
-    MachineError<ERROR>: From<ERROR>
-{
-    // SYMBOL is what the machine reads
-    // STATE is the machine's internal state that it shows
+    // INPUT is what the machine reads
     fn clear(&mut self);
-    fn get_run_info(& self) -> &RunInfo;
-    fn update(&mut self, symbol: &INPUT) -> Result<(), MachineError<ERROR>>;
-    fn get_state(&self) -> &OUTPUT;
+    fn get_run_info(&self) -> RunInfo;
+    fn update(&mut self, input: INPUT) -> std::result::Result<(), AutomatonError<ERROR>>;
     // if the machine is finished, get_state returns a reference to the last state the machine was in
+    fn get_state(&self) -> OUTPUT;
+    fn finish(&mut self);
  
     fn is_finished(&self) -> bool {
-        *self.get_run_info() == RunInfo::Finished
+        self.get_run_info() == RunInfo::Finished
     }
     fn is_ready(&self) -> bool {
-        *self.get_run_info() == RunInfo::Ready
+        self.get_run_info() == RunInfo::Ready
     }
     fn is_running(&self) -> bool {
-        *self.get_run_info() == RunInfo::Running
+        self.get_run_info() == RunInfo::Running
     }
-}
-
-
-pub trait UnendingMachine<INPUT, OUTPUT, ERROR: Error>: Machine<INPUT, OUTPUT, ERROR>
-where
-    MachineError<ERROR>: From<ERROR>
-{
-    fn finish(&mut self);
 }

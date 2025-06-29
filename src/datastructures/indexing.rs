@@ -56,6 +56,15 @@ impl Indexing for u64 {
     }
 }
 
+impl Indexing for usize {
+    fn from_usize(usize_id: usize) -> Self {
+        usize_id
+    }
+    fn into_usize(self) -> usize {
+        self
+    }
+}
+
 
 // ------
 
@@ -78,21 +87,6 @@ pub trait Handle: Sized {
         Self::from_id(Self::Id::from_usize(usize_id), context)
     }
 
-}
-
-struct X{}
-
-impl Handle for X {
-    type Id = u32;
-    type Context<'c> = &'c u32;
-
-    fn id<'c>(&self, context: Self::Context<'c>) -> Self::Id {
-        return 3;
-    }
-
-    fn from_id<'c>(id: Self::Id, context: Self::Context<'c>) -> Self {
-        return X{};
-    }
 }
 
 // offset of 1 for option type, None has id=0

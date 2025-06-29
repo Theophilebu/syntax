@@ -1,7 +1,7 @@
+/*
 use std::borrow::Cow;
 
 use crate::formal_language::*;
-use crate::datastructures::indexing::Idx;
 
 
 pub fn create_regex_grammar() -> Cfg {
@@ -10,7 +10,7 @@ pub fn create_regex_grammar() -> Cfg {
     let upper_letters = String::from("AZERTYUIOPQSDFGHJKLMWXCVBN");
     let digits = String::from("1234567890");
     let invisible_chars = String::from(" \n\t");
-    let other_chars = String::from("!\"#$%&'()*+,-./:;>=<?@[\\]^_`{|}~"); // ASCII 33-126 except
+    let other_chars = String::from("!\"#$%&'()*+,-./:;>=<?@[\\]^_`{|}~"); // ASCII 33-126
 
     let all_chars = [
         Vec::from_iter(lower_letters.chars()),
@@ -237,3 +237,4 @@ mod tests{
         }
     }
 }
+*/

@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 mod grammars;
 mod parsing;
 mod lexing;
@@ -11,6 +13,7 @@ type BitSetUINT = u8; // used for Bitsets, might slightly affect performance and
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type Error = Box<dyn std::error::Error>;
+
 
 fn main() {
     println!("{}", std::mem::size_of::<Vec<u8>>());
